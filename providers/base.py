@@ -28,7 +28,13 @@ class FlightProvider(ABC):
         depart_date: date,
         return_date: date,
     ) -> list[FlightOption]:
-        """Return round-trip flight options for the given route and dates."""
+        """Return round-trip flight options for the given route and dates.
+
+        Contract: all four datetimes must be timezone-aware. Outbound departure
+        and return arrival use the origin's local time; outbound arrival and
+        return departure use the destination's local time. The validator
+        relies on this to compare flight times with the itinerary.
+        """
 
 
 class StayProvider(ABC):

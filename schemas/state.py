@@ -33,6 +33,7 @@ ViolationCode = Literal[
     "no_late_checkin",
     "over_budget",
     "currency_mismatch",
+    "unknown_activity",
 ]
 
 NodeName = Literal["flight_agent", "activities_agent", "stay_agent", "itinerary_agent"]

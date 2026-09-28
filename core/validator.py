@@ -58,6 +58,13 @@ def _item_ref(item) -> str:
     return item.activity_id or item.title
 
 
+def is_late_arrival(flight: FlightOption) -> bool:
+    """Shared rule: landing at 21:00 or later, or after midnight, counts as late.
+    Used by the validator and the Stay Agent so they always agree."""
+    landing = flight.outbound_arrive.time()
+    return landing >= LATE_ARRIVAL_FROM or landing < LATE_ARRIVAL_UNTIL
+
+
 # ---------- Individual checks ----------
 def check_days(request: TripRequest, itinerary: list[DayPlan]) -> list[Violation]:
     violations = []
@@ -158,15 +165,13 @@ def check_stay(request: TripRequest, flight: FlightOption | None, stay: StayOpti
         violations.append(
             _v("stay_dates_mismatch", f"No accommodation selected for {request.num_nights} nights.")
         )
-    if stay and flight:
-        landing = flight.outbound_arrive.time()
-        is_late = landing >= LATE_ARRIVAL_FROM or landing < LATE_ARRIVAL_UNTIL
-        if is_late and not stay.late_checkin_ok:
-            violations.append(
-                _v("no_late_checkin",
-                   f"Flight lands at {landing:%H:%M} but {stay.name} has no late check-in.",
-                   [stay.id, flight.id])
-            )
+    if stay and flight and is_late_arrival(flight) and not stay.late_checkin_ok:
+        violations.append(
+            _v("no_late_checkin",
+               f"Flight lands at {flight.outbound_arrive:%H:%M} but {stay.name} "
+               "has no late check-in.",
+               [stay.id, flight.id])
+        )
     return violations
 
 

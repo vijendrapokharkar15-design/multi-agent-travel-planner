@@ -135,20 +135,20 @@ def run_flight_agent(state: TripState, provider: FlightProvider, llm: LLM) -> di
         warnings.append(f"Used fallback rule (cheapest direct flight): {error}")
         best_value_id = selected_id = _fallback_pick(options).id
 
-    # 6. Attach labels and reasons to the real provider data
-    labels: dict[str, str] = {}
+    # 6. Attach every label that applies, plus reasons, to the real provider data
+    labels: dict[str, list[str]] = {}
     for option_id, label in [
         (cheapest.id, "cheapest"),
         (fastest.id, "fastest"),
         (best_value_id, "best_value"),
     ]:
-        labels.setdefault(option_id, label)  # first label wins if one flight is several
+        labels.setdefault(option_id, []).append(label)
 
     shortlist: list[FlightOption] = []
     for option_id in dict.fromkeys([selected_id, cheapest.id, fastest.id, best_value_id]):
         shortlist.append(
             by_id[option_id].model_copy(
-                update={"label": labels.get(option_id), "reason": reasons.get(option_id)}
+                update={"labels": labels.get(option_id, []), "reason": reasons.get(option_id)}
             )
         )
 

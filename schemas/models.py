@@ -90,7 +90,7 @@ class FlightOption(BaseModel):
     price_per_person: float = Field(gt=0)
     currency: CurrencyCode
     provenance: Provenance
-    label: FlightLabel | None = None  # set by the Flight Agent
+    labels: list[FlightLabel] = Field(default_factory=list)  # set by the Flight Agent
     reason: str | None = None  # one-line explanation from the LLM
 
     @field_validator("outbound_depart", "outbound_arrive", "return_depart", "return_arrive")
@@ -128,7 +128,7 @@ class StayOption(BaseModel):
     rating: float | None = Field(default=None, ge=0)
     late_checkin_ok: bool = False
     provenance: Provenance
-    label: StayLabel | None = None  # set by the Stay Agent
+    labels: list[StayLabel] = Field(default_factory=list)  # set by the Stay Agent
     reason: str | None = None
 
     def total_price(self, nights: int) -> float:
@@ -151,7 +151,7 @@ class ActivityCandidate(BaseModel):
     close_time: time | None = None
     booking_needed: bool = False
     provenance: Provenance
-    reason: str | None = None
+    reason: str | None = None  # why it fits this traveller, set by the Activities Agent
 
     @model_validator(mode="after")
     def check_hours(self) -> "ActivityCandidate":

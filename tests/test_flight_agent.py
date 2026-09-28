@@ -21,7 +21,7 @@ def _decision(best, selected, reasons=None):
 
 
 def _labels(out):
-    return {f.id: f.label for f in out["flight_options"]}
+    return {f.id: f.labels for f in out["flight_options"]}
 
 
 # ---------- Happy path ----------
@@ -31,7 +31,11 @@ def test_llm_choice_is_applied_to_real_data(barcelona_request):
 
     assert out["selected_flight_id"] == "BCN-F1"
     assert out["flight_options"][0].id == "BCN-F1"  # selected comes first
-    assert _labels(out) == {"BCN-F1": "best_value", "BCN-F3": "cheapest", "BCN-F2": "fastest"}
+    assert _labels(out) == {
+        "BCN-F1": ["best_value"],
+        "BCN-F3": ["cheapest"],
+        "BCN-F2": ["fastest"],
+    }
 
     f1 = out["flight_options"][0]
     assert f1.reason == "Good times, fair price."
@@ -44,8 +48,9 @@ def test_invented_id_triggers_fallback(barcelona_request):
     fake = FakeLLM([_decision("BCN-F99", "BCN-F99")])
     out = run_flight_agent({"request": barcelona_request}, MockFlightProvider(), fake)
 
-    # Fallback rule: cheapest direct flight
+    # Fallback rule: cheapest direct flight, which is then also the best value
     assert out["selected_flight_id"] == "BCN-F3"
+    assert _labels(out)["BCN-F3"] == ["cheapest", "best_value"]  # both labels kept
     trace = out["trace"][0]
     assert trace.status == "partial"
     assert "unknown flight IDs" in trace.warnings[0]
@@ -66,7 +71,7 @@ def test_excluded_ids_are_never_offered(barcelona_request):
     out = run_flight_agent(state, MockFlightProvider(), fake)
 
     assert "BCN-F3" not in _labels(out)
-    assert _labels(out)["BCN-F4"] == "cheapest"  # next cheapest after F3
+    assert _labels(out)["BCN-F4"] == ["cheapest"]  # next cheapest after F3
     assert "BCN-F3" not in fake.calls[0]["user"]  # the LLM never even saw it
 
 

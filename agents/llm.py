@@ -5,6 +5,7 @@ client directly. Real runs pass OpenAILLM; tests pass FakeLLM.
 """
 
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Generic, Protocol, TypeVar
@@ -105,20 +106,38 @@ class OpenAILLM:
 
 
 class FakeLLM:
-    """Test double: returns pre-set answers in order and records every call.
+    """Test double that returns pre-set answers and records every call.
 
-    An item in `responses` can be an Exception, to simulate a failure.
+    Two modes:
+    - a list: answers are returned in call order (fine for a single agent)
+    - a dict {schema: [answers]}: answers are returned per schema, so the
+      order of parallel nodes doesn't matter (needed for graph tests)
+    An answer can be an Exception, to simulate a failure.
     """
 
-    def __init__(self, responses: list[BaseModel | Exception]):
-        self.responses = list(responses)
+    def __init__(self, responses: list | dict[type, list]):
+        if isinstance(responses, dict):
+            self._by_schema = {schema: list(answers) for schema, answers in responses.items()}
+            self._queue = None
+        else:
+            self._by_schema = None
+            self._queue = list(responses)
         self.calls: list[dict] = []
+        self._lock = threading.Lock()  # parallel nodes may call at the same moment
 
     def structured(self, system: str, user: str, schema: type[T]) -> LLMResult[T]:
-        self.calls.append({"system": system, "user": user, "schema": schema})
-        if not self.responses:
-            raise LLMError("FakeLLM has no responses left.")
-        answer = self.responses.pop(0)
+        with self._lock:
+            self.calls.append({"system": system, "user": user, "schema": schema})
+            if self._by_schema is not None:
+                answers = self._by_schema.get(schema, [])
+                if not answers:
+                    raise LLMError(f"FakeLLM has no {schema.__name__} answers left.")
+                answer = answers.pop(0)
+            else:
+                if not self._queue:
+                    raise LLMError("FakeLLM has no responses left.")
+                answer = self._queue.pop(0)
+
         if isinstance(answer, Exception):
             raise answer
         if not isinstance(answer, schema):

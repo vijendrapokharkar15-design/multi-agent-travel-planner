@@ -69,6 +69,7 @@ class TraceEntry(BaseModel):
     latency_ms: int = Field(ge=0)
     llm_calls: int = Field(default=0, ge=0)
     tokens: int = Field(default=0, ge=0)
+    cost_usd: float = Field(default=0, ge=0)
     summary: str
     assumptions: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

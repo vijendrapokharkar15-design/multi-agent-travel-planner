@@ -151,6 +151,7 @@ class ActivityCandidate(BaseModel):
     close_time: time | None = None
     booking_needed: bool = False
     provenance: Provenance
+    reason: str | None = None
 
     @model_validator(mode="after")
     def check_hours(self) -> "ActivityCandidate":

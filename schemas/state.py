@@ -60,6 +60,14 @@ class RevisionRequest(BaseModel):
     budget_action: BudgetAction | None = None
 
 
+class BudgetAdvice(BaseModel):
+    """The budget advisor's choice. action is None when no fix is possible."""
+
+    action: BudgetAction | None
+    reason: str
+    estimated_saving: float = Field(default=0, ge=0)
+
+
 class TraceEntry(BaseModel):
     """One record per node run. This is our 'result envelope'."""
 
@@ -90,6 +98,7 @@ class TripState(TypedDict, total=False):
     selected_stay_id: str | None
     itinerary: list[DayPlan]
     budget: BudgetBreakdown | None
+    budget_advice: BudgetAdvice | None
 
     # Validation and revision (single writer each, so plain replacement)
     violations: list[Violation]

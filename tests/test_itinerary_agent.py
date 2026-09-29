@@ -21,7 +21,7 @@ from core.scheduler import Assignment, build_schedule
 from core.validator import validate_plan
 from providers.mock import MockFlightProvider, MockStayProvider
 from schemas.models import WEEKDAYS
-from schemas.state import RevisionRequest
+from schemas.state import BudgetAdvice, RevisionRequest
 
 START = date(2026, 10, 10)
 END = date(2026, 10, 13)
@@ -58,6 +58,13 @@ def _a(day, slot, activity_id):
 
 def _scheduled(out):
     return [i.activity_id for d in out["itinerary"] for i in d.items if i.kind == "activity"]
+
+
+def _drop_paid_request(reason="Over by GBP 50"):
+    return RevisionRequest(
+        target="itinerary_agent", codes=["over_budget"],
+        reason=reason, budget_action="drop_paid_activities",
+    )
 
 
 # ---------- Happy path ----------
@@ -140,21 +147,40 @@ def test_drop_paid_revision_always_reduces_activity_cost(
     previous = build_schedule(barcelona_request, bcn_f1, bcn_s1, bcn_activities, plan).days
     state = _state(
         barcelona_request, bcn_f1, bcn_s1, bcn_activities,
-        itinerary=previous,
-        revision_request=RevisionRequest(
-            target="itinerary_agent", codes=["over_budget"],
-            reason="Over by GBP 50", budget_action="drop_paid_activities",
-        ),
+        itinerary=previous, revision_request=_drop_paid_request(),
     )
     # The LLM ignores the instruction and returns the same paid plan (26 + 35 + 13 = 74)
     fake = FakeLLM([ItineraryDecision(assignments=plan, day_themes=[])])
     out = run_itinerary_agent(state, fake)
 
-    assert "BCN-A02" not in _scheduled(out)  # the priciest item (35) was removed by code
+    assert "BCN-A02" not in _scheduled(out)  # the priciest item on a busy day (35)
     assert "Removed Casa Batllo to reduce cost." in out["trace"][0].warnings
     prompt = fake.calls[0]["user"]
     assert "prefer free activities" in prompt
     assert "Over by GBP 50" in prompt
+
+
+def test_drop_paid_meets_the_target_without_emptying_a_day(
+    barcelona_request, bcn_f1, bcn_s1, bcn_activities
+):
+    # Sunday: Sagrada Familia (26) + Cathedral (9). Monday: Casa Batllo (35) on its own.
+    plan = [_a(2, "morning", "BCN-A01"), _a(2, "morning", "BCN-A06"), _a(3, "morning", "BCN-A02")]
+    previous = build_schedule(barcelona_request, bcn_f1, bcn_s1, bcn_activities, plan).days
+    state = _state(
+        barcelona_request, bcn_f1, bcn_s1, bcn_activities,
+        itinerary=previous,
+        revision_request=_drop_paid_request(),
+        # 22.00 saving for 2 people incl. 10% contingency = 10.00 per person
+        budget_advice=BudgetAdvice(action="drop_paid_activities", reason="x", estimated_saving=22.0),
+    )
+    fake = FakeLLM([ItineraryDecision(assignments=plan, day_themes=[])])  # LLM ignores the target
+    out = run_itinerary_agent(state, fake)
+
+    # Casa Batllo is the priciest overall, but removing it would empty Monday,
+    # so code removes Sagrada Familia from busy Sunday instead
+    assert _scheduled(out) == ["BCN-A06", "BCN-A02"]
+    assert "Removed Sagrada Familia to reduce cost." in out["trace"][0].warnings
+    assert "about GBP 10.00 per person" in fake.calls[0]["user"]
 
 
 # ---------- Degrading gracefully ----------

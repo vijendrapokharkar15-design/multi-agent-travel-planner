@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from agents.activities import PER_DAY
 from agents.common import DATA_NOTICE, Timer, data_block, trace_entry
 from agents.llm import LLM, LLMError
+from core.budget import CONTINGENCY_RATE
 from core.scheduler import Assignment, ScheduleResult, build_schedule
 from core.scheduler import _day_window as day_window  # shared rule: usable time per day
 from schemas.models import WEEKDAYS, ActivityCandidate, FlightOption, TripRequest
@@ -36,6 +37,7 @@ Assign activities from the candidates to trip days and slots (morning, afternoon
 Rules:
 - Only use days that have usable time, and respect each day's usable window
   (an evening slot is no use on a day that ends at 16:45).
+- Every day with a full usable window should have at least one activity.
 - Never assign an activity on one of its closed days.
 - Aim for the number of activities per full day given by the traveller's pace.
 - Group activities in the same or nearby areas on the same day to reduce travel;
@@ -122,6 +124,16 @@ def _cost(ids: list[str], by_id: dict[str, ActivityCandidate]) -> float:
     return sum(by_id[i].price_per_person for i in ids if i in by_id)
 
 
+def _activities_per_day(result: ScheduleResult) -> dict[str, int]:
+    """For each scheduled activity, how many activities its day has in total."""
+    counts: dict[str, int] = {}
+    for day in result.days:
+        ids = [i.activity_id for i in day.items if i.kind == "activity"]
+        for activity_id in ids:
+            counts[activity_id] = len(ids)
+    return counts
+
+
 # ---------- The node ----------
 def run_itinerary_agent(state: TripState, llm: LLM) -> dict:
     timer = Timer()
@@ -140,6 +152,14 @@ def run_itinerary_agent(state: TripState, llm: LLM) -> dict:
         i.activity_id for d in state.get("itinerary", []) for i in d.items if i.kind == "activity"
     ]
 
+    # For a budget fix: how much activity spending to cut, per person
+    advice = state.get("budget_advice")
+    target_pp = 0.0
+    if drop_paid and advice and advice.estimated_saving:
+        target_pp = round(
+            advice.estimated_saving / (request.travellers * (1 + CONTINGENCY_RATE)), 2
+        )
+
     status, warnings, llm_result = "success", [], None
     themes: dict[int, str] = {}
 
@@ -152,13 +172,23 @@ def run_itinerary_agent(state: TripState, llm: LLM) -> dict:
         warnings.append("No activity candidates, so the plan has travel and meals only.")
         assignments: list[Assignment] = []
     else:
+        if drop_paid and target_pp:
+            budget_line = (
+                f"Budget fix: prefer free activities. Reduce activity spending by about "
+                f"{request.currency} {target_pp:.2f} per person. Swap paid activities for free "
+                "candidates rather than leaving days empty, and keep at least one activity "
+                "on every full day.\n"
+            )
+        elif drop_paid:
+            budget_line = "Budget fix: prefer free activities and use fewer paid ones than before.\n"
+        else:
+            budget_line = ""
         user_prompt = (
             f"Traveller: pace={request.pace} (about {PER_DAY[request.pace]} activities per full day), "
             f"style={request.style}, travellers={request.travellers}.\n"
             f"Hotel area: {stay.area if stay else 'no hotel (same-day trip)'}.\n"
             + (f"Revision request: {rev.reason}\n" if is_my_revision else "")
-            + ("Budget fix: prefer free activities and use fewer paid ones than before.\n"
-               if drop_paid else "")
+            + budget_line
             + "Days:\n" + _day_lines(request, flight) + "\n"
             + "Candidates:\n" + data_block("\n".join(_describe(a) for a in pool))
         )
@@ -182,16 +212,19 @@ def run_itinerary_agent(state: TripState, llm: LLM) -> dict:
         themes = {}
         result = schedule(assignments)
 
-    # 3. Budget fix must actually reduce activity cost: remove the priciest item until it does
+    # 3. Budget fix: code makes sure the saving really happens, removing paid
+    #    activities from BUSY days first so no day is emptied if avoidable
     if drop_paid and previous_ids:
-        previous_cost = _cost(previous_ids, by_id)
-        while _cost(result.scheduled_ids, by_id) >= previous_cost:
+        goal = _cost(previous_ids, by_id) - (target_pp or 0.01)
+        while _cost(result.scheduled_ids, by_id) > goal:
             paid = [i for i in result.scheduled_ids if by_id[i].price_per_person > 0]
             if not paid:
                 break
-            priciest = max(paid, key=lambda i: by_id[i].price_per_person)
-            warnings.append(f"Removed {by_id[priciest].name} to reduce cost.")
-            assignments = [a for a in assignments if a.activity_id != priciest]
+            per_day = _activities_per_day(result)
+            busy = [i for i in paid if per_day.get(i, 0) >= 2]
+            victim = max(busy or paid, key=lambda i: by_id[i].price_per_person)
+            warnings.append(f"Removed {by_id[victim].name} to reduce cost.")
+            assignments = [a for a in assignments if a.activity_id != victim]
             result = schedule(assignments)
 
     days = [

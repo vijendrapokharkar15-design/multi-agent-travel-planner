@@ -1,7 +1,6 @@
-langgraph
-openai
-pydantic>=2
-python-dotenv
-streamlit
-pytest
-tzdata
+langgraph==1.2.12
+openai==3.19.2
+pydantic==2.13.5
+python-dotenv==1.2.3
+streamlit==1.64.0
+tzdata==2026.4

@@ -1,0 +1,21 @@
+# Secrets: never bake keys into an image
+.env
+.env.*
+!.env.example
+
+# Local environment and caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Git and editor files
+.git/
+.gitignore
+.vscode/
+
+# Run outputs and development-only files
+runs/
+tests/
+scripts/
+requirements-dev.txt

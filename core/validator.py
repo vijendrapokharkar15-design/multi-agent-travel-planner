@@ -33,6 +33,7 @@ VIOLATION_OWNER: dict[ViolationCode, str | None] = {
     "activity_outside_hours": "itinerary_agent",
     "overlapping_items": "itinerary_agent",
     "empty_day": "itinerary_agent",
+    "thin_plan": "itinerary_agent",
     "unknown_activity": "itinerary_agent",
     "stay_dates_mismatch": "stay_agent",
     "no_late_checkin": "stay_agent",
@@ -65,6 +66,17 @@ def is_late_arrival(flight: FlightOption) -> bool:
     return landing >= LATE_ARRIVAL_FROM or landing < LATE_ARRIVAL_UNTIL
 
 
+def full_days(request: TripRequest, flight: FlightOption | None) -> tuple[date, date]:
+    """First and last FULL day: strictly after the arrival day and strictly before
+    the day you leave for the airport. Without a flight, every day is full.
+    (If first > last, the trip has no full days.)"""
+    if flight is None:
+        return request.start_date, request.end_date
+    first = flight.outbound_arrive.date() + timedelta(days=1)
+    last = (flight.return_depart - DEPARTURE_BUFFER).date() - timedelta(days=1)
+    return first, last
+
+
 # ---------- Individual checks ----------
 def check_days(request: TripRequest, itinerary: list[DayPlan]) -> list[Violation]:
     violations = []
@@ -81,6 +93,25 @@ def check_days(request: TripRequest, itinerary: list[DayPlan]) -> list[Violation
     for d in sorted(trip_dates - planned):
         violations.append(_v("empty_day", f"No plan for {d}."))
     return violations
+
+
+def check_thin_plan(
+    request: TripRequest,
+    flight: FlightOption | None,
+    itinerary: list[DayPlan],
+    activities: list[ActivityCandidate],
+) -> list[Violation]:
+    """Quality rule: every full day should have at least one activity.
+    Skipped when there are no candidates, since re-planning couldn't fix it."""
+    if not activities:
+        return []
+    first, last = full_days(request, flight)
+    return [
+        _v("thin_plan", f"No activities planned on {day.date:%a %d %b}, a full day of the trip.")
+        for day in itinerary
+        if first <= day.date <= last and day.items
+        and not any(i.kind == "activity" for i in day.items)
+    ]
 
 
 def check_flight_window(flight: FlightOption | None, itinerary: list[DayPlan]) -> list[Violation]:
@@ -210,6 +241,7 @@ def validate_plan(
     return [
         *check_currency(request, flight, stay, activities),
         *check_days(request, itinerary),
+        *check_thin_plan(request, flight, itinerary, activities),
         *check_flight_window(flight, itinerary),
         *check_activities(itinerary, activities),
         *check_overlaps(itinerary),

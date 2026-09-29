@@ -1,16 +1,20 @@
 """Flight Agent.
 
-Code fetches options and labels the facts (cheapest, fastest).
-The LLM makes the judgement call (best value, which to select, reasons).
-Code then checks the LLM's choice and falls back to a rule if it is invalid.
+Code fetches options and computes the facts (cheapest, fastest, usable hours
+at the destination, share of the budget). The LLM makes the judgement call
+(best value, which to select, reasons). Code then checks the LLM's choice and
+falls back to a rule if it is invalid.
 """
+
+from datetime import timedelta
 
 from pydantic import BaseModel
 
 from agents.common import DATA_NOTICE, Timer, data_block, trace_entry
 from agents.llm import LLM, LLMError
+from core.scheduler import _day_window as day_window  # same rule the scheduler uses
 from providers.base import FlightProvider, UnsupportedDestinationError
-from schemas.models import FlightOption
+from schemas.models import FlightOption, TripRequest
 from schemas.state import TripState
 
 AGENT = "flight_agent"
@@ -31,10 +35,14 @@ class FlightDecision(BaseModel):
 SYSTEM_PROMPT = f"""You are the Flight Agent in a travel planner.
 Choose flights for the traveller from the options provided.
 - best_value_id: the option with the best balance of price and usable time at the destination.
-- selected_id: the option you recommend overall for this traveller's style and pace.
-- reasons: one short sentence per option explaining its trade-off
-  (price, stops, arrival and departure times).
-A late arrival or an early departure costs the traveller most of a day; weigh that against price.
+- selected_id: the option you recommend overall for this traveller.
+- reasons: one short sentence per option explaining its trade-off.
+Each option shows the usable hours at the destination (already computed from the
+flight times) and, when there is a budget, the share of the budget the flights take.
+Prefer options that give more usable time for less money. Only choose a more
+expensive option when it clearly adds usable time, or the traveller's style is luxury.
+Flights, accommodation, food and activities must all fit in one budget, so an
+expensive flight means less money for everything else.
 Only use IDs that appear in the options. Never invent flights, prices or times.
 {DATA_NOTICE}"""
 
@@ -58,13 +66,30 @@ def _fallback_pick(options: list[FlightOption]) -> FlightOption:
     return _cheapest(direct or options)
 
 
-def _describe(f: FlightOption) -> str:
+def usable_hours(request: TripRequest, flight: FlightOption) -> float:
+    """Hours available for activities across the trip with this flight,
+    using exactly the same day windows as the scheduler."""
+    total_mins = 0
+    for i in range(request.num_days):
+        window = day_window(request.start_date + timedelta(days=i), flight)
+        if window:
+            total_mins += window[1] - window[0]
+    return round(total_mins / 60, 1)
+
+
+def _describe(f: FlightOption, request: TripRequest) -> str:
+    flights_total = f.price_per_person * request.travellers
+    share = (
+        f" ({flights_total / request.budget_amount:.0%} of the budget)"
+        if request.budget_amount else ""
+    )
     return (
         f"{f.id} | {f.airline} | out {f.outbound_depart:%a %H:%M} -> "
         f"{f.outbound_arrive:%H:%M} local, {f.outbound_stops} stops | "
         f"back {f.return_depart:%a %H:%M} -> {f.return_arrive:%H:%M}, "
-        f"{f.return_stops} stops | {_total_mins(f)} mins flying | "
-        f"{f.currency} {f.price_per_person:.2f} per person"
+        f"{f.return_stops} stops | usable time at destination {usable_hours(request, f)} h | "
+        f"{f.currency} {f.price_per_person:.2f} per person, "
+        f"{f.currency} {flights_total:.2f} for {request.travellers}{share}"
     )
 
 
@@ -109,15 +134,20 @@ def run_flight_agent(state: TripState, provider: FlightProvider, llm: LLM) -> di
     # 3. Facts, computed by code
     cheapest, fastest = _cheapest(options), _fastest(options)
     by_id = {o.id: o for o in options}
+    budget_line = (
+        f"Whole-trip budget: {request.currency} {request.budget_amount:.2f}.\n"
+        if request.budget_amount else "No budget given.\n"
+    )
 
     # 4. Judgement, made by the LLM
     user_prompt = (
         f"Traveller: style={request.style}, pace={request.pace}, "
-        f"travellers={request.travellers}.\n"
-        f"Facts already computed: cheapest={cheapest.id}, fastest={fastest.id}.\n"
+        f"travellers={request.travellers}, {request.num_days}-day trip.\n"
+        + budget_line
+        + f"Facts already computed: cheapest={cheapest.id}, fastest={fastest.id}.\n"
         + (f"Revision request: {rev.reason}\n" if is_my_revision else "")
         + "Options:\n"
-        + data_block("\n".join(_describe(o) for o in options))
+        + data_block("\n".join(_describe(o, request) for o in options))
     )
 
     status, warnings, llm_result, reasons = "success", [], None, {}
@@ -156,7 +186,8 @@ def run_flight_agent(state: TripState, provider: FlightProvider, llm: LLM) -> di
     summary = (
         f"{len(options)} options found; selected {chosen.id} ({chosen.airline}, "
         f"{chosen.currency} {chosen.price_per_person:.2f} per person, "
-        f"lands {chosen.outbound_arrive:%H:%M})."
+        f"lands {chosen.outbound_arrive:%H:%M}, "
+        f"{usable_hours(request, chosen)} usable hours)."
     )
     return {
         "flight_options": shortlist,

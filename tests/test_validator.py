@@ -9,7 +9,14 @@ from typing import get_args
 from zoneinfo import ZoneInfo
 
 from core.budget import compute_budget
-from core.validator import VIOLATION_OWNER, check_currency, check_stay, validate_plan
+from core.validator import (
+    VIOLATION_OWNER,
+    check_currency,
+    check_stay,
+    check_thin_plan,
+    full_days,
+    validate_plan,
+)
 from providers.mock import MockStayProvider
 from schemas.models import DayPlan
 from schemas.state import ViolationCode
@@ -134,6 +141,48 @@ def test_day_outside_trip_is_reported(
     v = validate_plan(lisbon_request, lisbon_flight, lisbon_stay,
                       good_lisbon_itinerary, lisbon_activities, None)
     assert "activity_outside_trip" in _codes(v)
+
+
+# ---------- Thin plans (quality rule) ----------
+def test_full_days_with_and_without_a_flight(barcelona_request, bcn_late_flight):
+    # Late flight lands Sat 23:35 and leaves Tue 06:30 (to the airport 03:30):
+    # the full days are Sunday and Monday
+    assert full_days(barcelona_request, bcn_late_flight) == (date(2026, 10, 11), date(2026, 10, 12))
+    assert full_days(barcelona_request, None) == (START, END)
+
+
+def test_full_day_with_only_meals_is_thin(
+    lisbon_request, lisbon_flight, lisbon_stay, lisbon_activities, good_lisbon_itinerary, make_item
+):
+    # Sunday 11 October is a full day; leave it with lunch only
+    good_lisbon_itinerary[1].items = [make_item("meal", "Lunch", "afternoon", "13:00", "14:00")]
+    v = validate_plan(lisbon_request, lisbon_flight, lisbon_stay,
+                      good_lisbon_itinerary, lisbon_activities, None)
+    assert _codes(v) == ["thin_plan"]
+
+
+def test_arrival_and_departure_days_may_be_light(
+    lisbon_request, lisbon_flight, lisbon_stay, lisbon_activities, good_lisbon_itinerary, make_item
+):
+    good_lisbon_itinerary[0].items = [
+        make_item("transfer", "Airport to hotel", "morning", "09:15", "10:15"),
+        make_item("meal", "Lunch", "afternoon", "13:00", "14:00"),
+    ]
+    good_lisbon_itinerary[3].items = [
+        make_item("meal", "Lunch", "afternoon", "12:00", "13:00"),
+        make_item("transfer", "Hotel to airport", "afternoon", "17:30", "18:30"),
+    ]
+    v = validate_plan(lisbon_request, lisbon_flight, lisbon_stay,
+                      good_lisbon_itinerary, lisbon_activities, None)
+    assert v == []
+
+
+def test_thin_plan_is_skipped_without_candidates(
+    lisbon_request, lisbon_flight, good_lisbon_itinerary, make_item
+):
+    # No candidates means re-planning couldn't help, so the rule stays quiet
+    good_lisbon_itinerary[1].items = [make_item("meal", "Lunch", "afternoon", "13:00", "14:00")]
+    assert check_thin_plan(lisbon_request, lisbon_flight, good_lisbon_itinerary, []) == []
 
 
 # ---------- Stay ----------

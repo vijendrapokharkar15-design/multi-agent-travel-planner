@@ -29,6 +29,7 @@ ViolationCode = Literal[
     "activity_outside_hours",
     "overlapping_items",
     "empty_day",
+    "thin_plan",
     "stay_dates_mismatch",
     "no_late_checkin",
     "over_budget",

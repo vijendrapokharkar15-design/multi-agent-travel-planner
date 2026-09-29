@@ -85,10 +85,12 @@ def test_scheduler_output_passes_the_validator(barcelona_request, bcn_f1, bcn_s1
 def test_late_flight_plan_also_passes_the_validator(
     barcelona_request, bcn_late_flight, bcn_s1, bcn_activities
 ):
-    # Lands 23:35, returns 06:30: no usable time on the first or last day
+    # Lands 23:35, returns 06:30: no usable time on the first or last day,
+    # so Sunday and Monday are the full days and each needs an activity
     result = build_schedule(barcelona_request, bcn_late_flight, bcn_s1, bcn_activities, [
         _a(1, "evening", "BCN-A12"),
         _a(2, "morning", "BCN-A01"),
+        _a(3, "morning", "BCN-A11"),
     ])
     assert _times(result.days[0]) == [("Airport to hotel", "23:50", "23:59")]
     assert "Flamenco show did not fit on day 1, so it was left out." in result.warnings

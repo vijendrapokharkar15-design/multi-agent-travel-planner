@@ -2,7 +2,8 @@
 parallel Flight and Activities agents can run in any order). No API calls.
 
 Trip: London to Barcelona, Sat 10 to Tue 13 October 2026, 2 travellers.
-The itinerary uses only free activities, so costs are easy to follow:
+The itinerary uses only free activities, one on each full day (Sun and Mon),
+so costs are easy to follow:
   with BCN-F1 + BCN-S1: (248 + 465 + 400 food + 128 transport) x 1.1 = 1,365.10
   with BCN-F1 + BCN-S2: (248 + 204 + 400 + 128) x 1.1                 = 1,078.00
 """
@@ -30,8 +31,8 @@ TODAY = date(2026, 9, 28)
 
 FREE_PLAN = ItineraryDecision(
     assignments=[
-        Assignment(day=2, slot="morning", activity_id="BCN-A04"),  # free walk
-        Assignment(day=2, slot="afternoon", activity_id="BCN-A07"),  # free beach
+        Assignment(day=2, slot="morning", activity_id="BCN-A04"),  # free walk, Sunday
+        Assignment(day=3, slot="afternoon", activity_id="BCN-A07"),  # free beach, Monday
     ],
     day_themes=[],
 )
@@ -103,6 +104,25 @@ def test_over_budget_is_fixed_by_a_cheaper_stay():
     router_summaries = [t.summary for t in state["trace"] if t.agent == "router"]
     assert router_summaries[0] == "Revision 1: over_budget sent to stay_agent (cheaper_stay)."
     assert router_summaries[-1] == "Plan is valid after 1 revision(s)."
+
+
+def test_thin_plan_is_repaired_by_the_loop():
+    thin = ItineraryDecision(
+        assignments=[Assignment(day=2, slot="morning", activity_id="BCN-A04")],  # Monday empty
+        day_themes=[],
+    )
+    fake = FakeLLM({
+        FlightDecision: [_flight("BCN-F1")],
+        ActivityDecision: [ACTIVITIES],
+        StayDecision: [_stay("BCN-S1")],
+        ItineraryDecision: [thin, FREE_PLAN],  # the revision fills Monday
+    })
+    state = plan_trip(fake, request=_request(2000))
+
+    assert state["status"] == "valid"
+    assert state["revision_count"] == 1
+    router_summaries = [t.summary for t in state["trace"] if t.agent == "router"]
+    assert router_summaries[0] == "Revision 1: thin_plan sent to itinerary_agent."
 
 
 def test_unaffordable_budget_stops_cleanly_with_warnings():
